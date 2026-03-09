@@ -25,35 +25,74 @@ export interface ClaudeUsageSummary {
   estimatedUsageRatio: number;
 }
 
-const CLAUDE_DIR = path.join(os.homedir(), ".claude");
-const PROJECTS_DIR = path.join(CLAUDE_DIR, "projects");
-
 // Rough daily token limit heuristic for display purposes
 const ESTIMATED_DAILY_TOKEN_LIMIT = 5_000_000;
 
-export function parseClaudeUsage(): ClaudeUsageSummary {
-  const sessions: SessionUsage[] = [];
+/**
+ * Returns all candidate directories where Claude Code stores project data.
+ * Supports both legacy (~/.claude) and newer (~/.config/claude) paths,
+ * as well as the CLAUDE_CONFIG_DIR environment variable override.
+ */
+function getProjectsDirs(): string[] {
+  const dirs: string[] = [];
+  const home = os.homedir();
 
-  if (!fs.existsSync(PROJECTS_DIR)) {
-    return emptySummary();
+  // Environment variable override
+  const envDir = process.env.CLAUDE_CONFIG_DIR;
+  if (envDir) {
+    dirs.push(path.join(envDir, "projects"));
   }
 
-  const projectDirs = fs.readdirSync(PROJECTS_DIR);
+  // Legacy path
+  dirs.push(path.join(home, ".claude", "projects"));
 
-  for (const projDir of projectDirs) {
-    const projPath = path.join(PROJECTS_DIR, projDir);
-    if (!fs.statSync(projPath).isDirectory()) {
+  // XDG / newer path
+  dirs.push(path.join(home, ".config", "claude", "projects"));
+
+  return dirs;
+}
+
+export function parseClaudeUsage(): ClaudeUsageSummary {
+  const sessions: SessionUsage[] = [];
+  // Track seen session IDs to avoid double-counting across directories
+  const seenSessionIds = new Set<string>();
+
+  for (const projectsDir of getProjectsDirs()) {
+    if (!fs.existsSync(projectsDir)) {
       continue;
     }
 
-    const files = fs.readdirSync(projPath).filter((f) => f.endsWith(".jsonl"));
+    let projectDirs: string[];
+    try {
+      projectDirs = fs.readdirSync(projectsDir);
+    } catch {
+      continue;
+    }
 
-    for (const file of files) {
-      const sessionId = file.replace(".jsonl", "");
-      const filePath = path.join(projPath, file);
-      const session = parseSessionFile(filePath, sessionId, projDir);
-      if (session) {
-        sessions.push(session);
+    for (const projDir of projectDirs) {
+      const projPath = path.join(projectsDir, projDir);
+      try {
+        if (!fs.statSync(projPath).isDirectory()) {
+          continue;
+        }
+      } catch {
+        continue;
+      }
+
+      const files = fs.readdirSync(projPath).filter((f) => f.endsWith(".jsonl"));
+
+      for (const file of files) {
+        const sessionId = file.replace(".jsonl", "");
+        if (seenSessionIds.has(sessionId)) {
+          continue;
+        }
+        seenSessionIds.add(sessionId);
+
+        const filePath = path.join(projPath, file);
+        const session = parseSessionFile(filePath, sessionId, projDir);
+        if (session) {
+          sessions.push(session);
+        }
       }
     }
   }
@@ -127,6 +166,11 @@ function parseSessionFile(
     let messageCount = 0;
     let lastActivity = "";
 
+    // Deduplicate by message ID: the same assistant response is split across
+    // multiple JSONL lines (one per content block) but they all share the same
+    // message.id and identical usage object. Only count each message ID once.
+    const seenMessageIds = new Set<string>();
+
     for (const line of lines) {
       try {
         const entry = JSON.parse(line);
@@ -135,20 +179,28 @@ function parseSessionFile(
           lastActivity = entry.timestamp;
         }
 
-        if (entry.message?.usage) {
-          const usage = entry.message.usage;
-          totalInputTokens += usage.input_tokens || 0;
-          totalOutputTokens += usage.output_tokens || 0;
-          cacheCreationTokens += usage.cache_creation_input_tokens || 0;
-          cacheReadTokens += usage.cache_read_input_tokens || 0;
-        }
-
-        if (entry.message?.model) {
-          model = entry.message.model;
-        }
-
-        if (entry.type === "user" || entry.type === "assistant") {
+        // Count unique user/assistant turns for messageCount
+        if (entry.type === "user") {
           messageCount++;
+        }
+
+        if (entry.type === "assistant" && entry.message) {
+          const msgId: string | undefined = entry.message.id;
+          const usage = entry.message.usage;
+
+          // Only count this message's tokens if we haven't seen this ID yet
+          if (msgId && !seenMessageIds.has(msgId) && usage) {
+            seenMessageIds.add(msgId);
+            totalInputTokens += usage.input_tokens || 0;
+            totalOutputTokens += usage.output_tokens || 0;
+            cacheCreationTokens += usage.cache_creation_input_tokens || 0;
+            cacheReadTokens += usage.cache_read_input_tokens || 0;
+            messageCount++;
+          }
+
+          if (entry.message.model) {
+            model = entry.message.model;
+          }
         }
       } catch {
         // Skip malformed lines
