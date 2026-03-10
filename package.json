@@ -1,0 +1,38 @@
+{
+  "name": "ccusage-vscode-cat",
+  "displayName": "Claude Code Usage Cat",
+  "description": "Display Claude Code token usage with a running cat animation",
+  "version": "0.1.0",
+  "publisher": "ccusage",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "ccusage-cat.show",
+        "title": "Claude Code Usage Cat: Show Token Usage"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "memfs": "^4.56.11",
+    "typescript": "^5.3.3",
+    "vitest": "^4.0.18"
+  }
+}
